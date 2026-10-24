@@ -48,6 +48,7 @@ devices_cache.json
 .mihome_cache/
 
 # 设备图标缓存（model -> 图标 URL 映射与图片文件）
+device_icons.json
 # 只忽略根目录的缓存目录：SiUI 组件库自带的 app/siui/gui/icons/ 是
 # 源码（被 siui.gui 引用），不能用无路径前缀的 icons/ 误杀
 /icons/
