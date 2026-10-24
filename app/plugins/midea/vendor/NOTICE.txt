@@ -1,0 +1,19 @@
+Midea 协议层（本目录）来源与许可
+====================================
+
+来源：Home Assistant 自定义组件 "Midea Auto Cloud"
+      上游仓库 https://github.com/sususweet/midea-meiju-codec
+      版本   v0.4.19（见 plugin.json 的 upstream.version）
+      许可   Apache License 2.0
+
+本目录内容为上游 custom_components/midea_auto_cloud/ 下**不依赖
+Home Assistant** 的协议层原样拷贝（core/ 9 个文件、device_mapping/
+全部数据表、const.py），未做任何修改，以便与上游保持可 diff、
+可随插件更新整体替换。
+
+上游其余文件（HA 实体层、config_flow、session_store、discover 等）
+绑定 Home Assistant 框架，未采用；对本平台的设备列表/控制/状态
+适配见上一级目录的 adapter.py。
+
+Apache License 2.0 全文见项目根目录 LICENSES-APACHE-2.0.txt
+（随本通知一并提供）。

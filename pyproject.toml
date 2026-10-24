@@ -17,6 +17,14 @@ dependencies = [
     "PySide6>=6.7",
     # 登录对话框渲染二维码用；虽是 mijiaAPI 的传递依赖，仍显式声明防止被动移除
     "qrcode>=8",
+    # 开机卡平台（app/core/platforms/rmtsw.py）的云端 HTTP 客户端
+    "requests>=2.28",
+    # 美的平台插件（app/plugins/midea）的协议层：aiohttp 异步客户端
+    "aiohttp>=3.9",
+    "aiofiles>=23",
+    # 美的协议层 device.py 顶层 import lua_runtime（Lua 编解码器）；
+    # 纯云端模式用不到，但模块导入需要它
+    "lupa>=2.0",
     # Material Design 图标，用于所有 UI 图标渲染
     "qtawesome>=1.4",
     # SiliconUI 组件需要 numpy 进行动画插值计算

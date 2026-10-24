@@ -48,7 +48,7 @@ import qtawesome as qta
 from app.core import board_store
 from app.core.jobs import PRIORITY_CONTROL, JobExecutor
 from app.core.models import DeviceInfo
-from app.core.service import MijiaService
+from app.core.platforms import PlatformRegistry
 from app.ui.power_button import PowerButton
 from app.ui.si_theme import SiColors
 
@@ -350,7 +350,7 @@ class WidgetsBoard(QWidget):
     # 否则轮询会拿旧记忆覆盖刚点的结果
     power_changed = Signal(str, object)  # (did, bool)
 
-    def __init__(self, service: MijiaService, jobs: JobExecutor, parent=None):
+    def __init__(self, service: PlatformRegistry, jobs: JobExecutor, parent=None):
         super().__init__(parent)
         self._service = service
         self._jobs = jobs

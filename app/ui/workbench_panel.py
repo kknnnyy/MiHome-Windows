@@ -25,7 +25,8 @@ from PySide6.QtWidgets import (
 
 from app.core import workbench_store
 from app.core.models import DeviceDetail, DeviceInfo, PropInfo
-from app.core.service import MijiaService, format_metrics_text
+from app.core.platforms import PlatformRegistry
+from app.core.service import format_metrics_text
 from app.ui.add_drawer import AddDrawer
 from app.ui.prop_widgets import (
     GroupSection,
@@ -78,7 +79,7 @@ class _SpinCircle(QWidget):
 class WorkbenchPanel(QWidget):
     metrics_updated = Signal(str, str)
 
-    def __init__(self, service: MijiaService, jobs, parent=None):
+    def __init__(self, service: PlatformRegistry, jobs, parent=None):
         super().__init__(parent)
         self._service = service
         self._jobs = jobs

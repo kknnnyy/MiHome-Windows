@@ -7,7 +7,7 @@
 core.service 适配层，界面层永远只依赖这里的稳定类型。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -16,6 +16,12 @@ class DeviceInfo:
 
     spec_type 是云端下发的设备规格 URN（可能为空：手表、第三方牙刷
     等无公开规格的设备），上游 5.x 按它拉取设备规格，取代旧版的 model。
+
+    多平台扩展（见 app/core/platforms）：platform 标识设备所属平台
+    （"mijia" 米家 / "rmtsw" 开机卡…），did 是跨平台唯一键（非米家
+    平台的 did 带平台前缀，如 "rmtsw:139713"），native_id 是平台内部
+    的设备 ID（空串表示与 did 相同，米家设备即是如此）。托盘、挂件、
+    定时任务等持久化数据一律以 did 为键，天然兼容多平台。
     """
 
     did: str
@@ -25,6 +31,12 @@ class DeviceInfo:
     room_name: str
     online: bool
     spec_type: str = ""
+    platform: str = "mijia"
+    native_id: str = ""
+
+    def native(self) -> str:
+        """平台内部设备 ID：调用平台接口时传这个值。"""
+        return self.native_id or self.did
 
 
 @dataclass
@@ -48,6 +60,31 @@ class PropInfo:
 class ActionInfo:
     name: str
     desc: str
+
+
+@dataclass
+class ControlSpec:
+    """详情面板里的一个结构化控制项（空调温度/模式/风速、开关实体等）。
+
+    kind:
+      - "switch"  布尔开关（value 为平台原生真假值）
+      - "range"   数值滑杆（minimum/maximum/step/unit 生效）
+      - "enum"    下拉选择（options 为 [(值, 展示名), ...]）
+
+    key 是平台内部属性键（美的即设备属性名或语义键），由平台的
+    set_control 负责翻译成真正的控制指令。
+    """
+
+    key: str
+    label: str
+    kind: str                                   # switch | range | enum
+    value: object = None                        # 当前值（平台原生形态）
+    options: list = field(default_factory=list)  # [(值, 展示名), ...]
+    minimum: float | None = None
+    maximum: float | None = None
+    step: float | None = None
+    unit: str = ""
+    enabled: bool = True                        # 离线/不可控时置灰
 
 
 @dataclass

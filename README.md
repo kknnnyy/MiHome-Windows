@@ -21,6 +21,9 @@
 - **界面缩放**：50%–200% 无级调节（叠加在系统缩放之上），需重启生效
 - **开机自启动**：可选，写入当前用户注册表（HKCU Run）
 - **小爱语音**：主界面右下角悬浮按钮，输入文字指令发送给在线小爱音箱，可指定默认输出音箱
+- **多平台管理**：可扩展的多设备平台架构（`app/core/platforms` + `app/plugins` 插件系统）——除米家外已接入**远程开机卡**（梦叶/rmtsw/siwiot，账号密码登录）：开机卡设备与米家设备合并显示在主界面、托盘与桌面挂件，卡片电源钮即电脑电源开关，详情页提供开机/关机/软关机/重启/锁定/解锁/来电自启等指令；入口在「更多 → 多平台管理」与「设置 → 应用功能」
+- **美的平台（插件）**：美的美居云端（美的美居 App 账号）——空调等设备合并进主界面/托盘/挂件，详情页提供电源、模式、风速、预设、摆风、设定温度等**完整控制**（按设备类型映射表自动生成），支持账号记住与本地会话免登录
+- **插件动态更新**：每个平台是一个插件目录（`plugin.json` 清单 + 适配器 + vendored 协议层）；美的插件的协议层来自上游 HA 组件（Apache-2.0，见 `app/plugins/midea/vendor/NOTICE.txt`），在「多平台管理」卡片上可**检查更新并一键替换**（GitHub releases），更新后的副本落在用户数据目录，无需管理员权限；新增平台 = 新建一个插件目录，无需改动主程序
 - **版本检测**：启动时自动检查 GitHub Releases 新版本，也可在关于页手动检测
 - **本地缓存**：设置、托盘/工作台配置与设备缓存存放在用户数据目录（详见下方路径说明）
 - **上游可升级**：mijiaAPI 仅作为 PyPI 依赖锁定在 `>=5,<6`，升级后跑 `python -m tests.smoke_test` 即可确认兼容性
@@ -163,6 +166,19 @@ app/
 │   ├── schedule_store.py       # 定时开关规则持久化
 │   ├── scheduler.py            # 定时判定（纯逻辑：到点/错过，不依赖 Qt）
 │   ├── update_checker.py       # GitHub Releases 新版本检查（后台线程 + 信号）
+│   ├── platforms/              # 多平台设备管理（可扩展）
+│   │   ├── base.py             #   平台抽象基类 PlatformBase + PlatformError
+│   │   ├── mijia.py            #   米家平台（MijiaService 适配）
+│   │   ├── rmtsw.py            #   开机卡平台（梦叶/rmtsw/siwiot 协议实现）
+│   │   └── registry.py         #   多平台注册表（界面层唯一入口，按 did 前缀路由）
+│   ├── platform_store.py       # 多平台账号与会话持久化（凭据/PHPSESSID）
+│   ├── plugins/                # 平台插件系统（动态更新）
+│   │   ├── loader.py           #   发现/校验/导入/注册 + GitHub 一键更新
+│   │   └── midea/              #   美的平台插件
+│   │       ├── plugin.json     #     清单（版本/入口/上游仓库）
+│   │       ├── adapter.py      #     MideaPlatform 适配器（异步桥+映射解释）
+│   │       ├── ha_shim.py      #     Home Assistant 常量替身
+│   │       └── vendor/         #     上游协议层（Apache-2.0，见 NOTICE.txt）
 │   └── restart.py              # 应用自重启（缩放等设置需重启生效时一键重启）
 ├── ui/                         # 界面层
 │   ├── main_window.py          # 主窗口（无边框标题栏）
@@ -187,6 +203,8 @@ app/
 │   ├── toast.py                # 轻量通知浮层
 │   ├── update_flow.py          # 版本检查界面流程（弹框提示/静默反馈）
 │   ├── login_dialog.py         # 扫码登录对话框
+│   ├── platform_manager.py     # 多平台管理对话框（各平台登录/退出/账号）
+│   ├── power_card_panel.py     # 指令式平台设备控制面板（电源 + 控制项 + 指令）
 │   ├── add_drawer.py           # 设备添加抽屉
 │   ├── typewriter.py           # 打字机效果组件
 │   ├── si_theme.py             # 主题中枢（深/浅调色板 + 全局 QSS 生成）
@@ -208,6 +226,8 @@ tests/
 ├── race_test.py                # 开关状态回弹回归（过期轮询不得覆盖本地操作）
 ├── schedule_test.py            # 定时开关回归（到点/错过/停用/界面接线）
 ├── audio_test.py               # 托盘音响栏回归（音箱下拉/独立偏好/音量渲染）
+├── platform_test.py            # 多平台与开机卡协议回归（假云端，无网络）
+├── plugin_test.py              # 插件系统与美的平台回归（真实映射表断言）
 └── subdevice_test.py           # 多键面板虚拟子设备的通道映射回归
 
 tools/
@@ -229,6 +249,9 @@ LICENSE                         # GPL-3.0 许可证
 | PySide6 | >=6.7 | Qt6 绑定 |
 | qrcode | >=8 | 登录二维码生成 |
 | qtawesome | >=1.4 | Material Design 图标 |
+| requests | >=2.28 | 开机卡平台与插件更新的 HTTP 客户端 |
+| aiohttp / aiofiles | >=3.9 / >=23 | 美的平台协议层（异步客户端） |
+| lupa | >=2.0 | 美的协议层的 Lua 编解码器依赖 |
 | numpy | - | SiliconUI 动画插值 |
 | typing_extensions | - | SiliconUI 在 Python 3.10 下所需的类型别名 |
 

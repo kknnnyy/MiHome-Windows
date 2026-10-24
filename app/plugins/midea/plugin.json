@@ -1,0 +1,18 @@
+{
+  "id": "midea",
+  "name": "美的",
+  "version": "1.0.0",
+  "entry": "adapter:MideaPlatform",
+  "description": "美的美居云端（美的美居 App 账号）：空调等设备的远程开关、温度、模式、风速控制",
+  "icon_name": "mdi.air-conditioner",
+  "python_deps": ["aiohttp>=3.9", "aiofiles>=23", "lupa>=2.0"],
+  "upstream": {
+    "repo": "sususweet/midea-meiju-codec",
+    "version": "v0.4.19",
+    "paths": [
+      "custom_components/midea_auto_cloud/core",
+      "custom_components/midea_auto_cloud/device_mapping",
+      "custom_components/midea_auto_cloud/const.py"
+    ]
+  }
+}

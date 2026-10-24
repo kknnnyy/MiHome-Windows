@@ -42,6 +42,7 @@ from app.core import cache as device_cache
 from app.core import icon_store, schedule_store
 from app.core.jobs import PRIORITY_CONTROL, PRIORITY_IDLE, JobExecutor
 from app.core.models import DeviceInfo, SceneInfo, is_speaker
+from app.core.platforms import PlatformRegistry
 from app.core.scheduler import Scheduler
 from app.core.service import MijiaService
 from app.ui.board_manager import BoardManagerDialog
@@ -167,7 +168,9 @@ class _IconButton(QPushButton):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self._service = MijiaService()
+        # 多平台注册表：米家（扫码登录）+ 开机卡（账号密码登录）等全部
+        # 平台经它合并成统一设备列表；界面层只与注册表交互
+        self._registry = PlatformRegistry(MijiaService())
         self._jobs = JobExecutor(self)
         # 第二条后台线程：只跑「纯 requests 的外部网页抓取」（产品页中文名、
         # 图标图片下载）。它们慢（实测单个产品页 2.4 秒、超时 30 秒）且与
@@ -188,6 +191,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(760, 520)
 
         self._all_devices: list[DeviceInfo] = []
+        # 缓存展示时被登录态挡掉的平台设备：静默登录就绪后重取一次列表
+        self._pending_platform_reload = False
         self._cards: dict[str, DeviceCard] = {}
         # did -> 本地操作版本号：每次用户/定时改这台设备的开关就 +1，
         # 用来丢弃"操作之前发出、操作之后才回来"的轮询结果
@@ -277,7 +282,7 @@ class MainWindow(QMainWindow):
         # 系统托盘：左键快捷窗口，默认空需用户自主添加
         self._force_quit = False
         try:
-            self._tray = TrayController(self._service, self._jobs, self)
+            self._tray = TrayController(self._registry, self._jobs, self)
             from app.core.settings_store import get_minimize_to_tray
             self._tray.set_tray_visible(get_minimize_to_tray())
         except Exception as e:
@@ -292,7 +297,7 @@ class MainWindow(QMainWindow):
         self._status_panel = None
         self._board_manager: BoardManagerDialog | None = None
         try:
-            self._board = WidgetsBoard(self._service, self._jobs, None)
+            self._board = WidgetsBoard(self._registry, self._jobs, None)
             self._board.manage_requested.connect(self.show_board_manager)
             self._board.open_device_requested.connect(self._on_open_device)
             # 挂件内开关后回传，保持主界面卡片与开关记忆一致
@@ -339,6 +344,7 @@ class MainWindow(QMainWindow):
         self._settings_btn = _IconButton("mdi.cog-outline", "设置", self)
         self._settings_btn.clicked.connect(self.show_settings)
         self._more_menu = QMenu()
+        self._more_menu.addAction("多平台管理").triggered.connect(self.show_platform_manager)
         self._more_menu.addAction("托盘管理").triggered.connect(self.show_tray_manager)
         self._more_menu.addAction("定时任务").triggered.connect(self.show_schedules)
         # 桌面挂件不再是"随手开关"：在 设置 → 应用功能 里统一启用/停用。
@@ -656,7 +662,7 @@ class MainWindow(QMainWindow):
         """应用入口第一步：校验登录态，决定拉列表还是弹扫码窗。"""
         self._show_status("正在检查登录状态…")
         self._jobs.submit(
-            self._service.login_status,
+            self._registry.login_status,
             on_success=self._after_login_check,
             # login_status 内部已兜底返回 False；这里只拦「根本没法问」的
             # 意外异常，同样按未登录处理，绝不让启动检查无声卡死
@@ -708,7 +714,7 @@ class MainWindow(QMainWindow):
         from app.ui.login_dialog import LoginDialog
 
         logger.info("未登录：打开扫码登录窗口")
-        dialog = LoginDialog(self._service, self._jobs, self)
+        dialog = LoginDialog(self._registry, self._jobs, self)
         if dialog.exec_and_wait() == LoginDialog.Accepted:
             self._startup_load()
         else:
@@ -718,9 +724,17 @@ class MainWindow(QMainWindow):
     def _startup_load(self) -> None:
         """启动加载：缓存命中直接渲染，未命中走在线拉取。
 
-        缓存里的开关记忆与温湿度读数一并恢复，启动瞬间即有完整
-        可用的界面与上次读数，新值拿到后覆盖。
+        先排一次非交互平台的静默登录（开机卡的本地会话/保存凭据、
+        美的的本地会话）：它与随后的设备列表拉取同在串行队列，登录
+        完成后列表自然带上这些平台的设备；失败也不影响米家设备的
+        加载。缓存里可能带着未登录平台的旧设备（应用时已按登录态
+        过滤），登录态就绪后需要重取一次列表补回来。
         """
+        self._jobs.submit(
+            self._registry.silent_auto_login,
+            on_success=lambda _: self._after_silent_login(),
+            on_error=lambda exc: logger.info("开机卡静默登录失败: %s", exc),
+        )
         self._poll_timer.start()
         self._metrics_timer.start()
         self._start_scheduler()
@@ -737,6 +751,18 @@ class MainWindow(QMainWindow):
         # 缓存命中不会走 _on_devices_loaded，耗材要单独拉一次，
         # 否则启动后要手动刷新才出现
         self._refresh_consumables()
+
+    def _after_silent_login(self) -> None:
+        """静默登录完成：缓存展示阶段被登录态挡掉的平台设备补回来。
+
+        只在确实过滤掉了设备时才重取（_apply_devices 里置位），
+        不给正常缓存启动增加一次云端往返。
+        """
+        if not self._pending_platform_reload:
+            return
+        self._pending_platform_reload = False
+        logger.info("静默登录后按真实登录态重取设备列表")
+        self.load_devices()
 
     def _apply_board_enabled(self) -> None:
         """按设置里的「桌面挂件」开关显示/隐藏挂件，并同步各菜单入口。
@@ -852,7 +878,7 @@ class MainWindow(QMainWindow):
             Toast.info(self, f"定时执行失败「{rname}」（{at}）：{error}", 5000)
 
         self._jobs.submit(
-            lambda d=did, on=turn_on: self._service.set_power_state(d, on),
+            lambda d=did, on=turn_on: self._registry.set_power_state(d, on),
             on_success=_on_success,
             on_error=_on_error,
             priority=PRIORITY_CONTROL,
@@ -913,7 +939,7 @@ class MainWindow(QMainWindow):
         self._refresh_btn.setToolTip("刷新中…")
         self._show_status("正在获取设备列表…")
         self._jobs.submit(
-            self._service.list_devices,
+            self._registry.list_devices,
             on_success=self._on_devices_loaded,
             on_error=self._on_load_error,
         )
@@ -937,9 +963,19 @@ class MainWindow(QMainWindow):
         return len(new - old), len(old - new)
 
     def _apply_devices(self, devices: list[DeviceInfo]) -> None:
-        self._all_devices = devices
+        # 未登录平台的设备不进列表：家庭/房间下拉、托盘、挂件全部由
+        # _all_devices 驱动，缓存里带着的旧设备（如美的上次登录过的）
+        # 在这里按真实登录态过滤，用户没登录的平台不出现
+        active = self._registry.active_platform_ids()
+        kept = [d for d in devices if d.platform in active]
+        if len(kept) != len(devices):
+            dropped = {d.platform for d in devices if d.platform not in active}
+            logger.info("按登录态过滤设备: %s", sorted(dropped))
+            # 这些平台可能正在静默登录：就绪后重取一次列表补回来
+            self._pending_platform_reload = True
+        self._all_devices = kept
         homes = sorted(
-            {d.home_name for d in devices},
+            {d.home_name for d in kept},
             key=lambda h: (h == "未知", h),
         )
         self._homes = [_ALL_HOMES] + homes
@@ -969,11 +1005,13 @@ class MainWindow(QMainWindow):
         本方法只处理缺失部分：拉 URL、缺图下发下载；图标 URL 与图片
         都落本地缓存（见 icon_store），设备列表不变时不会重复调接口。
         """
-        models = sorted({d.model for d in self._all_devices if d.model})
+        # 只有米家设备有型号图标可拉；开机卡等平台的 model 是占位值
+        models = sorted({d.model for d in self._all_devices
+                         if d.model and d.platform == "mijia"})
         if not models:
             return
         self._jobs.submit(
-            lambda m=models: self._service.icon_urls(m),
+            lambda m=models: self._registry.icon_urls(m),
             on_success=self._on_icons_ready,
             priority=PRIORITY_IDLE,
         )
@@ -987,7 +1025,7 @@ class MainWindow(QMainWindow):
                 continue
             # 图片下载走 _web_jobs：单张最慢可到 15 秒超时，绝不能占控制队列
             self._web_jobs.submit(
-                lambda m=model, u=url: self._service.icon_file(m, u),
+                lambda m=model, u=url: self._registry.icon_file(m, u),
                 on_success=lambda p, m=model: self._apply_card_icon(m, str(p))
                 if p else None,
                 priority=PRIORITY_IDLE,
@@ -1015,14 +1053,15 @@ class MainWindow(QMainWindow):
             return
         try:
             names_now = {d.did: d.name for d in self._all_devices}
-            replacements = self._service.localized_product_names(
+            replacements = self._registry.localized_product_names(
                 list(names_now), names_now)
-            ascii_devices = [d for d in self._all_devices if d.name.isascii() and d.model]
+            ascii_devices = [d for d in self._all_devices
+                             if d.name.isascii() and d.model and d.platform == "mijia"]
             model_to_did = {d.model: d.did for d in ascii_devices}
             models = sorted(model_to_did)
             if models:
                 # 产品页名称按型号缓存，需映射回 did 再并入替换表
-                for model, product_name in self._service.cached_product_page_names(models).items():
+                for model, product_name in self._registry.cached_product_page_names(models).items():
                     replacements[model_to_did[model]] = product_name
         except Exception:
             logger.exception("本地化设备名失败")
@@ -1034,13 +1073,13 @@ class MainWindow(QMainWindow):
         # 走 _web_jobs：产品页单次实测 2.4 秒、超时 30 秒，绝不能在
         # 控制队列里跑；失败后也不再每 5 秒重试（见 _on_product_names_failed）
         pending = sorted({d.model for d in ascii_devices
-                          if not self._service.has_product_page_name(d.model)
+                          if not self._registry.has_product_page_name(d.model)
                           and d.model not in self._localize_attempted})
         if pending and not self._localize_busy:
             self._localize_busy = True
             self._localize_attempted.update(pending)
             self._web_jobs.submit(
-                lambda: [self._service.product_page_name(m) for m in pending],
+                lambda: [self._registry.product_page_name(m) for m in pending],
                 on_success=lambda _: self._on_product_names_fetched(),
                 on_error=lambda e: self._on_product_names_failed(e),
                 priority=PRIORITY_IDLE,
@@ -1160,7 +1199,7 @@ class MainWindow(QMainWindow):
         if scenes is None:
             try:
                 from app.core.models import SceneInfo  # noqa: F401
-                scenes = self._service.scene_list(None)
+                scenes = self._registry.scene_list(None)
             except Exception:
                 scenes = []
         scenes_dict = [{"scene_id": s.scene_id, "name": s.name,
@@ -1251,7 +1290,7 @@ class MainWindow(QMainWindow):
         dlg = TrayManagerDialog(
             self._all_devices, parent,
             scenes=cached,
-            scene_loader=(lambda: self._service.scene_list(None))
+            scene_loader=(lambda: self._registry.scene_list(None))
             if self._show_scene_tab else None,
             jobs=self._jobs,
         )
@@ -1273,10 +1312,25 @@ class MainWindow(QMainWindow):
             self._update_tray_devices()
             Toast.info(self, "托盘项目已更新", 2000)
 
+    def show_platform_manager(self) -> None:
+        """打开多平台管理对话框（各设备平台的登录/退出与账号管理）。"""
+        from app.ui.platform_manager import PlatformManagerDialog
+
+        # 主窗口可能已隐藏到托盘，对话框需独立显示
+        parent = None if self.isHidden() else self
+        dlg = PlatformManagerDialog(self._registry, self._jobs,
+                                    devices=self._all_devices, parent=parent)
+        dlg.platforms_changed.connect(self.load_devices)
+        dlg.mijia_relogin_requested.connect(self._open_login_dialog)
+        try:
+            dlg.exec()
+        finally:
+            dlg.deleteLater()
+
     def show_about(self) -> None:
         """打开关于对话框（即用即建）。"""
         from app.ui.about_dialog import AboutDialog
-        dlg = AboutDialog(self, api_version=self._service.api_version())
+        dlg = AboutDialog(self, api_version=self._registry.api_version())
         dlg.exec()
         dlg.deleteLater()
 
@@ -1373,7 +1427,7 @@ class MainWindow(QMainWindow):
             fallback_note = "（首选音箱离线，已由当前在线音箱代答）"
             set_default_speaker_did("")
         self._jobs.submit(
-            lambda: self._service.run_action(did, "execute-text-directive", [text]),
+            lambda: self._registry.run_action(did, "execute-text-directive", [text]),
             on_success=lambda _, note=fallback_note: Toast.info(
                 self, f"已告诉小爱同学：{text}{note}", 3000),
             on_error=lambda e: Toast.info(self, f"执行失败：{e}", 4000),
@@ -1440,7 +1494,7 @@ class MainWindow(QMainWindow):
     def _refresh_consumables(self) -> None:
         """异步拉一次耗材明细（全屋口径），失败静默不影响主流程。"""
         self._jobs.submit(
-            self._service.consumable_items,
+            self._registry.consumable_items,
             on_success=self._on_consumables_loaded,
             on_error=lambda exc: logger.debug("耗材统计失败: %s", exc),
         )
@@ -1584,7 +1638,7 @@ class MainWindow(QMainWindow):
         # 说明这条结果比用户的操作旧，必须丢弃（见 _apply_power_states）
         snapshot = dict(self._power_gen)
         self._jobs.submit(
-            lambda: self._service.power_states(dids),
+            lambda: self._registry.power_states(dids),
             on_success=lambda states, snap=snapshot: self._apply_power_states(states, snap),
             on_error=self._on_poll_error,
         )
@@ -1643,6 +1697,16 @@ class MainWindow(QMainWindow):
         dev = next((d for d in self._all_devices if d.did == did), None)
         if dev is not None and not dev.online:
             return
+        if state is None and dev is not None and dev.online:
+            # 区分"确认无能力"与"读取失败"：美的这类平台在登录态异常时
+            # 返回 None，若当成无能力缓存下来，电源钮会永久消失
+            # （曾真实发生：美的设备卡片不显示电源按钮）
+            try:
+                if not self._registry.power_state_known(did):
+                    self._known_power.pop(did, None)
+                    return
+            except Exception:
+                pass
         self._known_power[did] = state
         card = self._cards.get(did)
         if card is not None and state is not None:
@@ -1661,12 +1725,12 @@ class MainWindow(QMainWindow):
         """
         dids = [
             d.did for d in self._visible_devices()
-            if self._known_power.get(d.did) is None
+            if self._known_power.get(d.did) is None and d.platform == "mijia"
         ]
         if not dids:
             return
         self._jobs.submit(
-            lambda: self._service.read_metrics(dids),
+            lambda: self._registry.read_metrics(dids),
             on_success=self._apply_metrics,
             on_error=lambda exc: logger.warning("拉取温湿度读数失败: %s", exc),
         )
@@ -1727,8 +1791,13 @@ class MainWindow(QMainWindow):
         ]
 
     def _device_has_functions(self, device: DeviceInfo) -> bool:
-        """None（spec 未拉取）视为有——等首轮轮询证实后再隐藏。"""
-        state = self._service.spec_has_published_functions(device.spec_type)
+        """None（spec 未拉取）视为有——等首轮轮询证实后再隐藏。
+
+        非米家平台（开机卡等）不经过 spec 体系，一律视为有可控制功能。
+        """
+        if device.platform != "mijia":
+            return True
+        state = self._registry.spec_has_published_functions(device.spec_type)
         return state is not False
 
     def _displayed_devices(self) -> list[DeviceInfo]:
@@ -2051,7 +2120,7 @@ class MainWindow(QMainWindow):
             self._bump_power_gen(did)
             card.set_busy(True)
             self._jobs.submit(
-                lambda: self._service.toggle_power(did),
+                lambda: self._registry.toggle_power(did),
                 on_success=lambda new_state, c=card, d=did:
                     self._on_power_done(c, d, new_state),
                 on_error=lambda err, c=card: self._on_power_failed(c, err),
@@ -2065,7 +2134,7 @@ class MainWindow(QMainWindow):
         card.set_power_state(target)
         card.set_busy(True)
         self._jobs.submit(
-            lambda: (self._service.set_power_state(did, target), target)[1],
+            lambda: (self._registry.set_power_state(did, target), target)[1],
             on_success=lambda new_state, c=card, d=did:
                 self._on_power_done(c, d, new_state),
             on_error=lambda err, c=card, d=did, prev=current:
@@ -2112,7 +2181,7 @@ class MainWindow(QMainWindow):
             return
         self._loading_scenes = True
         self._jobs.submit(
-            lambda: self._service.scene_list(
+            lambda: self._registry.scene_list(
                 None if self._current_home == _ALL_HOMES else self._current_home),
             on_success=self._on_scenes_loaded,
             on_error=self._on_scenes_failed,
@@ -2144,7 +2213,7 @@ class MainWindow(QMainWindow):
             return
         card.set_busy(True)
         self._jobs.submit(
-            lambda s=scene: self._service.run_scene(s),
+            lambda s=scene: self._registry.run_scene(s),
             on_success=lambda _, s=scene, c=card: self._on_scene_done(s, c),
             on_error=lambda e, s=scene, c=card: self._on_scene_failed(s, c, e),
         )
@@ -2168,7 +2237,11 @@ class MainWindow(QMainWindow):
         device = next((d for d in self._all_devices if d.did == did), None)
         if device is None:
             return
-        dialog = DeviceDetailDialog(self._service, self._jobs, device, self)
+        if device.platform != "mijia":
+            # 指令式平台（开机卡等）：走电源指令面板
+            self._open_power_card(device)
+            return
+        dialog = DeviceDetailDialog(self._registry, self._jobs, device, self)
         # 详情内取到温湿度后直接回写卡片与缓存（手动刷新的即时反馈）
         dialog.panel.metrics_updated.connect(self._on_detail_metrics)
         dialog.load()
@@ -2179,10 +2252,25 @@ class MainWindow(QMainWindow):
         # 无开关能力的设备返回 None 直接跳过
         if did in self._cards:
             self._jobs.submit(
-                lambda: self._service.power_state(did),
+                lambda: self._registry.power_state(did),
                 on_success=lambda state, d=did: self._apply_power_state(d, state),
                 on_error=lambda exc: logger.warning("详情关闭后回读开关失败: %s", exc),
             )
+
+    def _open_power_card(self, device: DeviceInfo) -> None:
+        """打开开机卡等指令式平台的设备控制面板。"""
+        from app.ui.power_card_panel import PowerCardDialog
+
+        dialog = PowerCardDialog(self._registry, self._jobs, device, self)
+        dialog.load()
+        dialog.exec()
+        dialog.deleteLater()
+        # 面板里可能下发过开关指令：关闭后回读一次同步卡片电源钮
+        self._jobs.submit(
+            lambda: self._registry.power_state(device.did),
+            on_success=lambda state, d=device.did: self._apply_power_state(d, state),
+            on_error=lambda exc: logger.warning("详情关闭后回读开关失败: %s", exc),
+        )
 
     # ---------- 资源 ----------
 

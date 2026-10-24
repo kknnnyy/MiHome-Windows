@@ -1,0 +1,442 @@
+from homeassistant.const import Platform, UnitOfTime
+from homeassistant.components.sensor import SensorStateClass, SensorDeviceClass
+from homeassistant.components.binary_sensor import BinarySensorDeviceClass
+from homeassistant.components.switch import SwitchDeviceClass
+
+# Original program options — do not remove/rename keys (automations / UI compatibility).
+_LEGACY_DRYER_PROGRAMS = {
+    "baby_clothes": {"program": "baby_clothes"},
+    "bed_clothes": {"program": "bed_clothes"},
+    "cotton": {"program": "cotton"},
+    "dehumidification": {"program": "dehumidification"},
+    "down_jacket": {"program": "down_jacket"},
+    "fiber": {"program": "fiber"},
+    "fresh_air": {"program": "fresh_air"},
+    "jean": {"program": "jean"},
+    "mixed_wash": {"program": "mixed_wash"},
+    "outdoor": {"program": "outdoor"},
+    "quick_dry_20": {"program": "quick_dry_20"},
+    "shirt": {"program": "shirt"},
+    "sport_clothes": {"program": "sport_clothes"},
+    "towel": {"program": "towel"},
+    "underwear": {"program": "underwear"},
+    "warm_clothes": {"program": "warm_clothes"},
+}
+
+# Full program set from midea_dryer.lua (controlMapping / reportMapping).
+_LUA_DRYER_PROGRAMS = {
+    "cotton": {"program": "cotton"},
+    "fiber": {"program": "fiber"},
+    "mixed_wash": {"program": "mixed_wash"},
+    "jean": {"program": "jean"},
+    "bedsheet": {"program": "bedsheet"},
+    "outdoor": {"program": "outdoor"},
+    "down_jacket": {"program": "down_jacket"},
+    "plush": {"program": "plush"},
+    "wool": {"program": "wool"},
+    "dehumidify": {"program": "dehumidify"},
+    "cold_air_fresh_air": {"program": "cold_air_fresh_air"},
+    "hot_air_dry": {"program": "hot_air_dry"},
+    "sport_clothes": {"program": "sport_clothes"},
+    "underwear": {"program": "underwear"},
+    "baby_clothes": {"program": "baby_clothes"},
+    "shirt": {"program": "shirt"},
+    "standard": {"program": "standard"},
+    "quick_dry": {"program": "quick_dry"},
+    "fresh_air": {"program": "fresh_air"},
+    "low_temp_dry": {"program": "low_temp_dry"},
+    "eco_dry": {"program": "eco_dry"},
+    "quick_dry_30": {"program": "quick_dry_30"},
+    "towel": {"program": "towel"},
+    "intelligent_dry": {"program": "intelligent_dry"},
+    "steam_care": {"program": "steam_care"},
+    "big": {"program": "big"},
+    "fixed_time_dry": {"program": "fixed_time_dry"},
+    "night_dry": {"program": "night_dry"},
+    "bracket_dry": {"program": "bracket_dry"},
+    "western_trouser": {"program": "western_trouser"},
+    "dehumidification": {"program": "dehumidification"},
+    "smart_dry": {"program": "smart_dry"},
+    "four_piece_suit": {"program": "four_piece_suit"},
+    "warm_clothes": {"program": "warm_clothes"},
+    "quick_dry_20": {"program": "quick_dry_20"},
+    "steam_sterilize": {"program": "steam_sterilize"},
+    "enzyme": {"program": "enzyme"},
+    "big_60": {"program": "big_60"},
+    "steam_no_iron": {"program": "steam_no_iron"},
+    "air_wash": {"program": "air_wash"},
+    "bed_clothes": {"program": "bed_clothes"},
+    "little_fast_dry": {"program": "little_fast_dry"},
+    "small_piece_dry": {"program": "small_piece_dry"},
+    "big_dry": {"program": "big_dry"},
+    "wool_nurse": {"program": "wool_nurse"},
+    "sun_quilt": {"program": "sun_quilt"},
+    "fresh_remove_smell": {"program": "fresh_remove_smell"},
+    "bucket_self_clean": {"program": "bucket_self_clean"},
+    "silk": {"program": "silk"},
+    "sterilize": {"program": "sterilize"},
+    "heavy_duty": {"program": "heavy_duty"},
+    "towel_warmer": {"program": "towel_warmer"},
+    "air_fluff": {"program": "air_fluff"},
+    "delicates": {"program": "delicates"},
+    "time_drying_30": {"program": "time_drying_30"},
+    "time_drying_60": {"program": "time_drying_60"},
+    "time_drying_90": {"program": "time_drying_90"},
+    "dry_softnurse": {"program": "dry_softnurse"},
+    "uniforms": {"program": "uniforms"},
+    "remove_electricity": {"program": "remove_electricity"},
+}
+
+
+# Programs in _LUA_DRYER_PROGRAMS that T_0000_DC_12851_2021040101.lua (sn8 38204893)
+# does not define in controlMapping.program; selecting them would encode an unknown value.
+_PROGRAMS_NOT_IN_12851 = ("dry_softnurse", "remove_electricity", "uniforms")
+
+def _level_options(attr: str, levels: range) -> dict:
+    return {str(level): {attr: level} for level in levels}
+
+
+DEVICE_MAPPING = {
+    "default": {
+        "rationale": ["off", "on"],
+        "queries": [{}],
+        "centralized": [],
+        "entities": {
+            Platform.SWITCH: {
+                "power": {
+                    "device_class": SwitchDeviceClass.SWITCH
+                },
+                "control_status": {
+                    "rationale": ["pause", "start"]
+                },
+                "ai_switch": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1]
+                },
+                "light": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1]
+                },
+                "sterilize": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1]
+                },
+                "prevent_wrinkle_switch": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1]
+                },
+            },
+            Platform.BINARY_SENSOR: {
+                "door_warn": {
+                    "device_class": BinarySensorDeviceClass.OPENING,
+                    "translation_key": "door_opened"
+                }
+            },
+            Platform.SELECT: {
+                "program": {
+                    "options": _LEGACY_DRYER_PROGRAMS,
+                },
+                "intensity": {
+                    "options": {
+                        "off": {"intensity": "1"},
+                        "10": {"intensity": "2"},
+                        "20": {"intensity": "3"},
+                        "30": {"intensity": "4"},
+                        "40": {"intensity": "5"}
+                    }
+                },
+                "forget_no_worry_time": {
+                    "options": {
+                        "off": {"forget_no_worry_time": "off"},
+                        "2": {"forget_no_worry_time": 2},
+                        "4": {"forget_no_worry_time": 4},
+                        "6": {"forget_no_worry_time": 6},
+                        "8": {"forget_no_worry_time": 8}
+                    }
+                }
+            },
+            Platform.SENSOR: {
+                "running_status": {
+                    "device_class": SensorDeviceClass.ENUM
+                },
+                "appointment_time": {
+                    "device_class": SensorDeviceClass.DURATION,
+                    "unit_of_measurement": UnitOfTime.MINUTES,
+                    "state_class": SensorStateClass.MEASUREMENT
+                },
+                "remain_time": {
+                    "device_class": SensorDeviceClass.DURATION,
+                    "unit_of_measurement": UnitOfTime.MINUTES,
+                    "state_class": SensorStateClass.MEASUREMENT
+                },
+                "progress": {
+                    "device_class": SensorDeviceClass.ENUM
+                },
+                "error_code": {
+                    "device_class": SensorDeviceClass.ENUM
+                },
+                "dry_time": {
+                    "device_class": SensorDeviceClass.DURATION,
+                    "unit_of_measurement": UnitOfTime.MINUTES,
+                    "state_class": SensorStateClass.MEASUREMENT
+                }
+            }
+        }
+    },
+    # sn8-specific: full midea_dryer.lua surface (programs + commandSpec attrs).
+    "38211209": {
+        "rationale": ["off", "on"],
+        "queries": [{}],
+        "centralized": [],
+        "entities": {
+            Platform.SWITCH: {
+                "power": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                },
+                "control_status": {
+                    "rationale": ["pause", "start"],
+                },
+                "ai_switch": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "light": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "sterilize": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "prevent_wrinkle_switch": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "steam_switch": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "eco_dry_switch": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "bucket_clean_switch": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "appointment": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "remind_sound": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "damp_dry_signal": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "dry_night": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "remove_static_electricity": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "intelligent_prevent_damp": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "flash_dry": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+            },
+            Platform.LOCK: {
+                "baby_lock": {
+                    "translation_key": "child_lock",
+                    "rationale": [0, 1],
+                },
+            },
+            Platform.BINARY_SENSOR: {
+                "door_warn": {
+                    "device_class": BinarySensorDeviceClass.DOOR,
+                    "translation_key": "door_opened",
+                    "rationale": [0, 1],
+                },
+                "water_box": {
+                    "device_class": BinarySensorDeviceClass.PROBLEM,
+                    "rationale": [0, 1],
+                },
+            },
+            Platform.SELECT: {
+                "program": {
+                    # Superset of legacy keys + lua programs (e.g. eco_dry).
+                    "options": {**_LEGACY_DRYER_PROGRAMS, **_LUA_DRYER_PROGRAMS},
+                },
+                "intensity": {
+                    "options": _level_options("intensity", range(0, 6)),
+                },
+                "dryness_level": {
+                    "options": _level_options("dryness_level", range(0, 5)),
+                },
+                "prevent_wrinkle": {
+                    "options": _level_options("prevent_wrinkle", range(0, 9)),
+                },
+                "steam": {
+                    "options": _level_options("steam", range(0, 5)),
+                },
+                "material": {
+                    "options": _level_options("material", range(0, 6)),
+                },
+                "temperature_level": {
+                    "options": _level_options("temperature_level", range(0, 6)),
+                },
+                "smell": {
+                    "options": _level_options("smell", range(0, 6)),
+                },
+            },
+            Platform.NUMBER: {
+                "dry_time": {
+                    "min": 0,
+                    "max": 240,
+                    "step": 1,
+                    "unit_of_measurement": UnitOfTime.MINUTES,
+                },
+                "appointment_time": {
+                    "min": 0,
+                    "max": 1440,
+                    "step": 1,
+                    "unit_of_measurement": UnitOfTime.MINUTES,
+                },
+                "smell_time": {
+                    "min": 0,
+                    "max": 60,
+                    "step": 1,
+                    "unit_of_measurement": UnitOfTime.MINUTES,
+                },
+            },
+            Platform.SENSOR: {
+                "running_status": {
+                    "device_class": SensorDeviceClass.ENUM,
+                },
+                "remain_time": {
+                    "device_class": SensorDeviceClass.DURATION,
+                    "unit_of_measurement": UnitOfTime.MINUTES,
+                    "state_class": SensorStateClass.MEASUREMENT,
+                },
+                "progress": {
+                    "device_class": SensorDeviceClass.ENUM,
+                },
+                "error_code": {
+                    "device_class": SensorDeviceClass.ENUM,
+                },
+                "keep_fresh_status": {
+                    "device_class": SensorDeviceClass.ENUM,
+                },
+            },
+        },
+    },
+    # sn8-specific: MH90-H03Y (subtype 12851, T_0000_DC_12851_2021040101.lua).
+    # Same surface as "default", with two changes backed by this device's lua:
+    #   - dry_time is writable (commandSpec: offset 120, 16 bits) instead of a sensor;
+    #   - program options cover every program in its controlMapping
+    #     (adds e.g. time_drying_30/60/90, quick_dry_30, fixed_time_dry).
+    "38204893": {
+        "rationale": ["off", "on"],
+        "queries": [{}],
+        "centralized": [],
+        "entities": {
+            Platform.SWITCH: {
+                "power": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                },
+                "control_status": {
+                    "rationale": ["pause", "start"],
+                },
+                "ai_switch": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "light": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "sterilize": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+                "prevent_wrinkle_switch": {
+                    "device_class": SwitchDeviceClass.SWITCH,
+                    "rationale": [0, 1],
+                },
+            },
+            Platform.BINARY_SENSOR: {
+                "door_warn": {
+                    "device_class": BinarySensorDeviceClass.OPENING,
+                    "translation_key": "door_opened",
+                },
+            },
+            Platform.SELECT: {
+                "program": {
+                    "options": {
+                        **_LEGACY_DRYER_PROGRAMS,
+                        **{k: v for k, v in _LUA_DRYER_PROGRAMS.items()
+                           if k not in _PROGRAMS_NOT_IN_12851},
+                    },
+                },
+                "intensity": {
+                    "options": {
+                        "off": {"intensity": "1"},
+                        "10": {"intensity": "2"},
+                        "20": {"intensity": "3"},
+                        "30": {"intensity": "4"},
+                        "40": {"intensity": "5"},
+                    },
+                },
+                "forget_no_worry_time": {
+                    "options": {
+                        "off": {"forget_no_worry_time": "off"},
+                        "2": {"forget_no_worry_time": 2},
+                        "4": {"forget_no_worry_time": 4},
+                        "6": {"forget_no_worry_time": 6},
+                        "8": {"forget_no_worry_time": 8},
+                    },
+                },
+            },
+            Platform.NUMBER: {
+                "dry_time": {
+                    # Own translation_key so the existing sn8 38211209 dry_time number
+                    # (no translation today) keeps its current name.
+                    "translation_key": "dry_time_setting",
+                    "min": 0,
+                    "max": 240,
+                    "step": 1,
+                    "unit_of_measurement": UnitOfTime.MINUTES,
+                },
+            },
+            Platform.SENSOR: {
+                "running_status": {
+                    "device_class": SensorDeviceClass.ENUM,
+                },
+                "appointment_time": {
+                    "device_class": SensorDeviceClass.DURATION,
+                    "unit_of_measurement": UnitOfTime.MINUTES,
+                    "state_class": SensorStateClass.MEASUREMENT,
+                },
+                "remain_time": {
+                    "device_class": SensorDeviceClass.DURATION,
+                    "unit_of_measurement": UnitOfTime.MINUTES,
+                    "state_class": SensorStateClass.MEASUREMENT,
+                },
+                "progress": {
+                    "device_class": SensorDeviceClass.ENUM,
+                },
+                "error_code": {
+                    "device_class": SensorDeviceClass.ENUM,
+                },
+            },
+        },
+    },
+}

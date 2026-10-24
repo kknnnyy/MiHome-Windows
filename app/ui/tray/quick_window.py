@@ -33,7 +33,7 @@ import qtawesome as qta
 from app.core import settings_store, tray_store
 from app.core.jobs import PRIORITY_CONTROL, JobExecutor
 from app.core.models import DeviceInfo, SceneInfo, is_speaker
-from app.core.service import MijiaService
+from app.core.platforms import PlatformRegistry
 from app.ui.power_button import PowerButton
 from app.ui.si_theme import SiColors
 from app.ui.toast import Toast
@@ -48,7 +48,7 @@ class TrayQuickWindow(QDialog):
     open_device_requested = Signal(str)  # did
     open_main_requested = Signal()
 
-    def __init__(self, service: MijiaService, jobs: JobExecutor, parent=None):
+    def __init__(self, service: PlatformRegistry, jobs: JobExecutor, parent=None):
         super().__init__(parent)
         self._service = service
         self._jobs = jobs

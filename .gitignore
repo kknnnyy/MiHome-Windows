@@ -48,8 +48,9 @@ devices_cache.json
 .mihome_cache/
 
 # 设备图标缓存（model -> 图标 URL 映射与图片文件）
-device_icons.json
-icons/
+# 只忽略根目录的缓存目录：SiUI 组件库自带的 app/siui/gui/icons/ 是
+# 源码（被 siui.gui 引用），不能用无路径前缀的 icons/ 误杀
+/icons/
 
 # 用户个性化配置（每个人不同）
 tray.json
@@ -57,6 +58,12 @@ workbench.json
 settings.json
 board.json
 schedules.json
+
+# 多平台账号与会话（含开机卡/美的的账号密码、PHPSESSID、
+# accessToken 等敏感凭据，绝不提交）
+platforms.json
+platform_sessions.json
+
 # 原子写的临时残留（正常流程会被 os.replace 消费）
 *.json.tmp
 
@@ -66,6 +73,9 @@ logs/
 
 # 单实例锁文件（run.py 运行时生成，退出后可能残留）
 MiHome-Windows.lock
+
+# ---- 本地 AI 工作区（会话记忆 / 临时探针，仅本机使用，绝不提交）----
+.codebuddy/
 
 # ---- 测试覆盖率 ----
 .coverage

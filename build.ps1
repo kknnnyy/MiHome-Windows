@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+﻿# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 MiHome-Windows contributors
 <#
 .SYNOPSIS
@@ -13,7 +13,11 @@
 #>
 
 param(
-    [switch]$Clean
+    [switch]$Clean,
+    # MinGW64 路线：不安装 Visual Studio / Windows SDK，由 Nuitka 自行下载
+    # 其验证过的 MinGW64 工具链（约 150MB，需 --assume-yes-for-downloads）。
+    # 适用于不想为打包安装数 GB VS 组件的场景；默认 MSVC 路线性能更好。
+    [switch]$MinGW
 )
 
 $ErrorActionPreference = "Stop"
@@ -91,6 +95,13 @@ if (-not (Test-Path $Pip)) {
 # ============================================================
 # 2. 激活 MSVC 编译环境（自动定位，兼容不同 VS 版本/安装盘）
 # ============================================================
+# MinGW64 路线整段跳过：MSVC 的 cl.exe 虽能编译，但链接 Windows exe 必需
+# kernel32.lib 等导入库，它们只随 Windows SDK 提供——"用 MSVC 但不装
+# SDK" 做不到。不想装数 GB VS 组件时走 -MinGW（Nuitka 自下载工具链）。
+if ($MinGW) {
+    Write-Host "[MinGW64 路线] 跳过 MSVC / Windows SDK 检查" -ForegroundColor Cyan
+    Write-Host "            编译工具链由 Nuitka 自行下载（约 150MB）" -ForegroundColor Gray
+} else {
 # 以前这里写死 "C:\Program Files (x86)\...\2022\BuildTools\vcvars64.bat"：
 # 装在别的版本（如 VS 18）或别的盘符时直接报"未找到"，让人误以为必须
 # 重装成 2022。改为先问 vswhere，再按常见模式兜底扫描。
@@ -192,6 +203,7 @@ if (-not $Env:WindowsSDKVersion -or $Env:WindowsSDKVersion -eq "0.0.0.0") {
     $Env:WindowsSDKVersion = "$($sdkVersions[0])\"
 }
 Write-Host "MSVC ready  (Windows SDK $($sdkVersions -join ', '))" -ForegroundColor Green
+}
 
 # ============================================================
 # 3. 前置检查（Nuitka 缺失即补装，兼容先跑过 start.bat 的旧 venv）
@@ -234,7 +246,7 @@ if (-not $NuitkaVer) {
 }
 Write-Host "Nuitka $NuitkaVer" -ForegroundColor Green
 
-# ---- 给 Nuitka 打 vswhere -utf8 补丁（幂等）----
+# ---- 给 Nuitka 打 vswhere -utf8 补丁（幂等；仅 MSVC 路线需要）----
 # Nuitka 4.x 调用 vswhere 查 MSVC 安装路径时没加 -utf8，而中文 Windows 上
 # vswhere 默认按 ANSI 输出；VS 装在中文目录（如 D:\常用软件\...）时，
 # Nuitka 按 UTF-8 解码这段路径会抛 UnicodeDecodeError，构建直接崩。
@@ -253,7 +265,7 @@ function Repair-NuitkaVswherePatch {
     [System.IO.File]::WriteAllText($file, $text, (New-Object System.Text.UTF8Encoding($false)))
     Write-Host "已修补 Nuitka：vswhere 加 -utf8（中文路径下必需）" -ForegroundColor Gray
 }
-Repair-NuitkaVswherePatch -PythonPath $Python
+if (-not $MinGW) { Repair-NuitkaVswherePatch -PythonPath $Python }
 
 # ============================================================
 # 4. 清理
@@ -309,10 +321,16 @@ $NuitkaArgs = @(
     "--copyright=Copyright (C) 2026 MiHome-Windows contributors"
 )
 
-# 强制用 MSVC（与上游作者一致）。不加这条时，Nuitka 一旦发现 MSVC/SDK
-# 不可用会自行回退到自带的备用工具链（还会联网下载），既慢又掩盖真正的
-# 环境问题；加上之后它会直接报错退出，问题一眼可见。
-$NuitkaArgs += "--msvc=latest"
+# 工具链选择：默认强制 MSVC（与上游作者一致）。不加这条时，Nuitka 一旦
+# 发现 MSVC/SDK 不可用会自行回退到自带的备用工具链（还会联网下载），
+# 既慢又掩盖真正的环境问题；加上之后它会直接报错退出，问题一眼可见。
+# -MinGW 则显式走 Nuitka 自下载的 MinGW64（不装 VS / 不装 Windows SDK）。
+if ($MinGW) {
+    $NuitkaArgs += "--mingw64"
+    Write-Host "Toolchain: MinGW64 (Nuitka 自下载)" -ForegroundColor Cyan
+} else {
+    $NuitkaArgs += "--msvc=latest"
+}
 
 Write-Host "`nBuilding MiHome-Windows..." -ForegroundColor Cyan
 Write-Host "(这是最耗时的一步，通常需要几分钟；期间会输出 Nuitka 各阶段进度，请勿关闭窗口)`n" -ForegroundColor Yellow

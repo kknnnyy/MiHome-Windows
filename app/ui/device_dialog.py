@@ -11,13 +11,13 @@ from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
 
 from app.core.jobs import JobExecutor
 from app.core.models import DeviceInfo
-from app.core.service import MijiaService
+from app.core.platforms import PlatformRegistry
 from app.ui.overlay_dialog import OverlayDialog
 from app.ui.workbench_panel import WorkbenchPanel
 
 
 class DeviceDetailDialog(OverlayDialog):
-    def __init__(self, service: MijiaService, jobs: JobExecutor,
+    def __init__(self, service: PlatformRegistry, jobs: JobExecutor,
                  device: DeviceInfo, parent=None):
         super().__init__(parent)
         self.device = device

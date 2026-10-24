@@ -34,6 +34,7 @@ from app.ui.si_theme import (
     SiColors,
     apply_combo_qss,
     primary_button_qss,
+    secondary_button_qss,
     themed_combo,
     themed_switch,
     themed_tab_button,
@@ -395,6 +396,18 @@ class SettingsDialog(OverlayDialog):
         _sync_switch(self._board_toggle)
         board_row.addWidget(self._board_toggle)
 
+        # ── 多平台管理（开机卡等第三方设备平台） ──
+        self._platform_item, self._platform_label, self._platform_desc, platform_row = \
+            self._make_item(
+                "多平台管理",
+                "管理米家以外的设备平台（如远程开机卡）：登录后其设备将合并显示在"
+                "主界面、托盘与桌面挂件")
+        self._platform_btn = QPushButton("管理")
+        self._platform_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._platform_btn.setFixedHeight(30)
+        self._platform_btn.clicked.connect(self._open_platform_manager)
+        platform_row.addWidget(self._platform_btn)
+
         # ── 隐藏无可控制功能的设备 ──
         self._hide_item, self._hide_label, self._hide_desc, hide_row = self._make_item(
             "隐藏无可控制功能的设备",
@@ -416,9 +429,25 @@ class SettingsDialog(OverlayDialog):
 
         return self._build_scroll([
             self._autostart_item, self._speaker_item, self._tray_item,
-            self._start_min_item, self._board_item, self._hide_item,
+            self._start_min_item, self._board_item, self._platform_item,
+            self._hide_item,
             self._update_item,
         ])
+
+    def _open_platform_manager(self) -> None:
+        """打开多平台管理对话框（设置页入口）。"""
+        window = self.parent() if self.parent() is not None else self
+        opener = getattr(window, "show_platform_manager", None)
+        if callable(opener):
+            opener()
+            return
+        from app.ui.platform_manager import PlatformManagerDialog
+
+        dlg = PlatformManagerDialog(
+            getattr(window, "_registry", None), getattr(window, "_jobs", None),
+            devices=getattr(window, "_all_devices", None), parent=self)
+        dlg.exec()
+        dlg.deleteLater()
 
     # ---------- 分类切换 ----------
 
@@ -473,7 +502,8 @@ class SettingsDialog(OverlayDialog):
         for item in (self._tray_item, self._start_min_item, self._fab_item,
                      self._scene_item, self._theme_item, self._autostart_item,
                      self._speaker_item, self._hide_item, self._scale_item,
-                     self._update_item, self._board_item, self._accent_item):
+                     self._update_item, self._board_item, self._accent_item,
+                     self._platform_item):
             item.setStyleSheet(panel_card)
             # 高度按内容自适应（不固定）：长描述换行后行自然变高，
             # 不会被固定 64px 裁掉；短描述保持紧凑。QScrollArea 负责
@@ -484,17 +514,20 @@ class SettingsDialog(OverlayDialog):
         for label in (self._tray_label, self._start_min_label, self._fab_label,
                       self._scene_label, self._theme_label, self._autostart_label,
                       self._speaker_label, self._hide_label, self._scale_label,
-                      self._update_label, self._board_label, self._accent_label):
+                      self._update_label, self._board_label, self._accent_label,
+                      self._platform_label):
             label.setStyleSheet(
                 f"color: {SiColors.TEXT_PRIMARY}; background: transparent; font-size: 10pt;")
         for desc in (self._tray_desc, self._start_min_desc, self._fab_desc,
                      self._scene_desc, self._theme_desc, self._autostart_desc,
                      self._speaker_desc, self._hide_desc, self._scale_desc,
-                     self._update_desc, self._board_desc, self._accent_desc):
+                     self._update_desc, self._board_desc, self._accent_desc,
+                     self._platform_desc):
             desc.setStyleSheet(
                 f"color: {SiColors.TEXT_SECONDARY}; background: transparent; font-size: 7pt;")
         # 主按钮文字固定白色（不随深/浅主题翻转）
         self._done_btn.setStyleSheet(primary_button_qss("7px 18px"))
+        self._platform_btn.setStyleSheet(secondary_button_qss("4px 16px"))
         apply_combo_qss(self._theme_combo)
         self._theme_combo.set_arrow_color(SiColors.TEXT_SECONDARY)
         # 界面缩放下拉同样随主题刷新（遗漏曾致切主题后仍保持旧深色样式）

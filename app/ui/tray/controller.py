@@ -9,14 +9,14 @@ from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from app.core.jobs import JobExecutor
 from app.core.models import DeviceInfo
-from app.core.service import MijiaService
+from app.core.platforms import PlatformRegistry
 from app.ui.tray.quick_window import TrayQuickWindow
 
 
 class TrayController:
     """托盘图标控制器：常驻图标 + 快捷窗口 + 右键菜单。"""
 
-    def __init__(self, service: MijiaService, jobs: JobExecutor, main_window):
+    def __init__(self, service: PlatformRegistry, jobs: JobExecutor, main_window):
         self._service = service
         self._jobs = jobs
         self._main = main_window

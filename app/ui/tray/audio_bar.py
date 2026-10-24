@@ -24,7 +24,7 @@ import qtawesome as qta
 
 from app.core.jobs import JobExecutor
 from app.core.models import DeviceInfo
-from app.core.service import MijiaService
+from app.core.platforms import PlatformRegistry
 from app.ui.si_theme import PRIMARY_TEXT, SiColors, themed_combo
 
 
@@ -34,7 +34,7 @@ class _TrayAudioBar(QFrame):
     # 用户在下拉里换了要控制的音箱（由外层负责落盘偏好并刷新）
     speaker_changed = Signal(str)
 
-    def __init__(self, service: MijiaService, jobs: JobExecutor, parent=None):
+    def __init__(self, service: PlatformRegistry, jobs: JobExecutor, parent=None):
         super().__init__(parent)
         self._service = service
         self._jobs = jobs
