@@ -273,6 +273,9 @@ if (-not $MinGW) { Repair-NuitkaVswherePatch -PythonPath $Python }
 if ($Clean -and (Test-Path "dist")) {
     Remove-Item "dist" -Recurse -Force
 }
+# 插件树会被整体复制进产物，先把 __pycache__ 清掉，避免把编译缓存带进 dist
+Get-ChildItem "app\plugins" -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
 # ============================================================
 # 5. 构建
@@ -296,16 +299,30 @@ $NuitkaArgs = @(
     "--windows-console-mode=disable"
     "--windows-icon-from-ico=app\ui\icon.ico"
     "--include-package=app.siui"
+    # 插件系统：插件是运行期 importlib 动态导入的（loader 扫描 plugin.json →
+    # import_module("app.plugins.<id>.<entry>")，设备映射表 T0xXX 也是动态
+    # import），Nuitka 的静态分析看不到这条链，不打进来打包版就没有美的平台，
+    # 界面上表现得"像旧版本"。--include-package 会递归编译整个包（含 vendored
+    # 协议层）。
+    "--include-package=app.plugins"
     "--include-package=qtawesome"
     "--include-package-data=qtawesome"
     "--include-data-files=app\ui\icon.png=app/ui/icon.png"
     "--include-data-files=app\ui\tray_icon.png=app/ui/tray_icon.png"
     "--include-data-files=app\ui\tray_icon_light.png=app/ui/tray_icon_light.png"
+    # 整棵插件树作为数据复制一份：plugin.json / NOTICE.txt 这类非代码文件
+    # 只能从磁盘读（loader 靠扫描 plugin.json 发现插件），同时保留 .py 源码
+    # 作为动态 import（设备映射表 T0xXX）的兜底来源
+    "--include-data-dir=app\plugins=app/plugins"
     "--include-data-dir=$PySide6Translations=PySide6/translations"
     "--nofollow-import-to=tkinter,unittest,pytest"
     # tools/ 与 tests/ 不参与打包：Nuitka 只跟随 run.py 的 import 链，
     # 它们本来就不会被带进去；这里显式排除以防将来被间接引用
     "--nofollow-import-to=tools,tests"
+    # homeassistant 不参与打包：美的协议层的数据表 `from homeassistant.const
+    # import ...` 由 ha_shim 在运行期塞进 sys.modules 的替身模块提供，
+    # 编译期并不存在真实包，显式排除以免 Nuitka 报未解析模块
+    "--nofollow-import-to=homeassistant"
     "--noinclude-dlls=qt6datavisualization.dll"
     "--noinclude-dlls=qt6pdf.dll"
     "--jobs=4"

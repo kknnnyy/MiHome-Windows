@@ -14,6 +14,7 @@ import importlib
 import json
 import logging
 import shutil
+import sys
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
@@ -102,9 +103,32 @@ def _scan(root: Path, source: str) -> dict[str, PluginInfo]:
     return found
 
 
+def _bundled_roots() -> list[Path]:
+    """内置插件根目录候选（按优先级）。
+
+    源码模式下 ``BUNDLED_DIR`` 就是源码目录，直接用；
+    打包版（Nuitka standalone）模块被编译进 exe，``__file__`` 可能是
+    编译期的源码路径（用户机器上不存在）或 dist 下的虚拟路径，此时以
+    **exe 同目录的 app/plugins** 为准——build.ps1 会把整棵插件树作为数据
+    复制过去（plugin.json / NOTICE.txt 等非代码文件必须来自磁盘）。
+    """
+    roots: list[Path] = []
+    try:
+        exe_root = Path(sys.executable).resolve().parent / "app" / "plugins"
+    except Exception:  # pragma: no cover - sys.executable 异常时退回源码目录
+        exe_root = None
+    if exe_root is not None and exe_root.is_dir() and exe_root != BUNDLED_DIR:
+        roots.append(exe_root)
+    roots.append(BUNDLED_DIR)
+    return roots
+
+
 def discover() -> list[PluginInfo]:
     """发现全部插件；同 id 用户目录覆盖内置。"""
-    plugins = _scan(BUNDLED_DIR, "bundled")
+    plugins: dict[str, PluginInfo] = {}
+    # 先扫打包产物目录（存在即优先），再扫源码目录，最后用户目录覆盖
+    for root in _bundled_roots():
+        plugins.update(_scan(root, "bundled"))
     plugins.update(_scan(USER_DIR, "user"))
     return sorted(plugins.values(), key=lambda p: p.id)
 

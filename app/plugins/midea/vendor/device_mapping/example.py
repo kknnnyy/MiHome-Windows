@@ -24,7 +24,10 @@ DEVICE_MAPPING = {
                     "rvalue": "[current_temperature] / 2"
                 }
             ],
-            "set": {
+            # 注意：与 get 一样是**列表**（每项一条规则）。曾误写成 { {...} }，
+            # 那是"集合套字典"，解释器会抛 unhashable type，Nuitka 常量折叠
+            # 阶段更是直接崩溃
+            "set": [
                 {
                     "lvalue": "[target_temperature]",
                     "rvalue": "[target_temperature_new] * 2"
@@ -33,7 +36,7 @@ DEVICE_MAPPING = {
                     "lvalue": "[current_temperature]",
                     "rvalue": "[current_temperature_new] * 2"
                 }
-            }
+            ]
         },
         "entities": {
             Platform.CLIMATE: {
