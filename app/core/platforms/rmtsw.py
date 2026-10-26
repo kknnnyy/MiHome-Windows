@@ -342,6 +342,15 @@ class RmtswPlatform(PlatformBase):
         # 开机卡登录态在会话内自持：合并设备列表时不重复打联网校验
         return self._user_name is not None
 
+    def get_captcha(self) -> dict:
+        """取登录图形验证码（委托云端客户端）。
+
+        UI 层拿到的是 RmtswPlatform 适配对象而非 RmtswClient，必须
+        在此转发，否则命中 PlatformBase 的 NotImplementedError 桩
+        （正是"获取验证码失败"空消息的根因）。
+        """
+        return self._client.get_captcha()
+
     def login(self, username: str, password: str,
               remember: bool = False, vcode_id: str = "",
               vcode: str = "") -> None:
