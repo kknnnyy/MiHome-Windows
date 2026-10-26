@@ -195,24 +195,28 @@ class RmtswClient:
 
         vcode_img 已拼好 ``data:image/jpeg;base64,`` 前缀，可直接喂给 Qt
         图片控件（base64 解码后）或 ``<img>``。
+
+        注意：该接口服务端即便成功也常返回非 0 的 ErrCode，因此只要
+        ``Data.VCodeImg`` 存在即视为成功（与 jsmyapi 的宽松判定一致）。
+        另外取图发生在登录失败之后，client_init 已执行过一次，这里再
+        调用即便返回非 0 也忽略（会话已由首次 init 建立，无需重连）。
         """
-        self.client_init()
+        try:
+            self.client_init()
+        except PlatformError:
+            pass
         payload = self._request_raw(_CMD_GET_VCODE,
                                     {"VCodeType": _GET_VCODE_TYPE})
-        code = payload.get("ErrCode")
-        if code:
+        data = payload.get("Data")
+        if not isinstance(data, dict) or not data.get("VCodeImg"):
+            code = payload.get("ErrCode")
             hint = _ERROR_HINTS.get(code)
-            message = payload.get("ErrMsg") or hint or "未知错误"
+            message = payload.get("ErrMsg") or hint or "服务端未返回验证码图片"
             if hint and hint not in message:
                 message = f"{message}（{hint}）"
-            raise PlatformError(f"获取验证码失败（错误码 {code}）：{message}")
-        data = payload.get("Data")
-        if not isinstance(data, dict):
-            raise PlatformError("获取验证码失败：服务端未返回数据")
+            raise PlatformError(f"获取验证码失败：{message}")
         vcode_id = data.get("VCodeId") or ""
         img = data.get("VCodeImg") or ""
-        if not vcode_id or not img:
-            raise PlatformError("获取验证码失败：服务端未返回验证码图片")
         return {"vcode_id": vcode_id,
                 "vcode_img": f"data:image/jpeg;base64,{img}"}
 
