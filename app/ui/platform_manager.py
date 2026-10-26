@@ -16,8 +16,8 @@ import logging
 
 import qtawesome as qta
 import shiboken6
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QSize, Qt, Signal, QByteArray
+from PySide6.QtGui import QFont, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from app.core import platform_store
 from app.core.models import DeviceInfo
 from app.core.platforms import PlatformRegistry
+from app.core.platforms.base import CaptchaRequired
 from app.plugins import apply_update, check_update, discover
 from app.ui.overlay_dialog import OverlayDialog
 from app.ui.si_theme import (
@@ -115,6 +116,8 @@ class PlatformManagerDialog(OverlayDialog):
             if getattr(platform, "supports_password_login", False):
                 card.login_requested.connect(self._on_password_login)
                 card.logout_requested.connect(self._on_password_logout)
+                card.refresh_captcha_requested.connect(
+                    lambda pid: self._fetch_captcha(pid))
             if platform.platform_id == "mijia":
                 card.relogin_requested.connect(self.mijia_relogin_requested)
             card.update_requested.connect(self._on_plugin_update)
@@ -169,16 +172,20 @@ class PlatformManagerDialog(OverlayDialog):
         return None
 
     def _on_password_login(self, platform_id: str, username: str,
-                           password: str, remember: bool) -> None:
+                           password: str, remember: bool,
+                           vcode: str = "") -> None:
         card = self._cards.get(platform_id)
         platform = self._password_platform(platform_id)
         if card is None or platform is None:
             return
         self._set_busy(True)
         card.set_status(f"正在登录{platform.display_name}…")
+        kwargs = dict(username=username, password=password, remember=remember)
+        if vcode:
+            kwargs["vcode"] = vcode
+            kwargs["vcode_id"] = card._vcode_id
         self._jobs.submit(
-            lambda: platform.login(username=username, password=password,
-                                   remember=remember),
+            lambda: platform.login(**kwargs),
             on_success=lambda _: self._on_login_done(platform_id, card),
             on_error=lambda exc: self._on_login_failed(platform_id, card, exc),
         )
@@ -205,9 +212,48 @@ class PlatformManagerDialog(OverlayDialog):
         if not _alive(self) or not _alive(card):
             return
         self._set_busy(False)
+        if isinstance(error, CaptchaRequired):
+            # 服务端要求验证码：取图并展示
+            self._fetch_captcha(platform_id)
+            return
         message = str(error) or "登录失败"
         logger.warning("%s 登录失败: %s", platform_id, message)
         card.set_status(message, error=True)
+        if getattr(card, "_vcode_id", ""):
+            # 已处于验证码模式（如 -2102 验证码错误）：刷新图片重试
+            self._fetch_captcha(platform_id)
+
+    def _fetch_captcha(self, platform_id: str) -> None:
+        """后台取验证码图片（CMD=101），加载成功由卡片展示。"""
+        card = self._cards.get(platform_id)
+        platform = self._password_platform(platform_id)
+        if card is None or platform is None:
+            return
+        self._set_busy(True)
+        card.set_status("正在获取验证码…")
+        self._jobs.submit(
+            platform.get_captcha,
+            on_success=lambda data: self._on_captcha_loaded(card, data),
+            on_error=lambda exc: self._on_captcha_failed(card, exc),
+        )
+
+    def _on_captcha_loaded(self, card: "_PlatformCard", data: dict) -> None:
+        if not _alive(self) or not _alive(card):
+            return
+        self._set_busy(False)
+        try:
+            card.show_captcha(data.get("vcode_id", ""), data.get("vcode_img", ""))
+        except Exception as exc:
+            card.set_status(f"验证码显示失败：{exc}", error=True)
+            return
+        card.set_status("请输入图中验证码后重试", error=True)
+
+    def _on_captcha_failed(self, card: "_PlatformCard",
+                           error: Exception) -> None:
+        if not _alive(self) or not _alive(card):
+            return
+        self._set_busy(False)
+        card.set_status(f"获取验证码失败：{error}", error=True)
 
     def _on_password_logout(self, platform_id: str) -> None:
         card = self._cards.get(platform_id)
@@ -352,8 +398,9 @@ class PlatformManagerDialog(OverlayDialog):
 class _PlatformCard(QFrame):
     """单个平台的管理卡片：状态、设备数、登录控件、插件更新。"""
 
-    login_requested = Signal(str, str, str, bool)  # 平台/账号/密码/记住
-    logout_requested = Signal(str)                 # 平台 id
+    login_requested = Signal(str, str, str, bool, str)  # 平台/账号/密码/记住/验证码
+    refresh_captcha_requested = Signal(str)             # 平台 id：请求刷新验证码
+    logout_requested = Signal(str)                      # 平台 id
     relogin_requested = Signal()                   # 米家：扫码登录/切换账号
     update_requested = Signal(str)                 # 插件：检查更新
 
@@ -365,6 +412,7 @@ class _PlatformCard(QFrame):
         self._devices: list[DeviceInfo] = devices or []
         self._plugin_info = plugin_info
         self._busy = False
+        self._vcode_id = ""          # 当前验证码挑战的 VCodeId（空=无）
         self.setObjectName("platformCard")
 
         lay = QVBoxLayout(self)
@@ -470,6 +518,39 @@ class _PlatformCard(QFrame):
         form.addWidget(self._pass_edit)
         form.addWidget(self._remember)
 
+        # 图形验证码区：仅开机卡多次失败被要求时显示（默认隐藏）
+        self._vcode_widget = QWidget()
+        vcode_lay = QVBoxLayout(self._vcode_widget)
+        vcode_lay.setContentsMargins(0, 0, 0, 0)
+        vcode_lay.setSpacing(6)
+        img_row = QHBoxLayout()
+        img_row.setSpacing(8)
+        self._vcode_img_label = QLabel()
+        self._vcode_img_label.setFixedSize(110, 42)
+        self._vcode_img_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._vcode_img_label.setToolTip("点击图片刷新验证码")
+        self._vcode_img_label.setScaledContents(True)
+        self._vcode_img_label.mousePressEvent = (
+            lambda _e: self.refresh_captcha_requested.emit(
+                self._platform.platform_id))
+        img_row.addWidget(self._vcode_img_label)
+        self._vcode_refresh_btn = QPushButton("刷新")
+        self._vcode_refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._vcode_refresh_btn.setFixedHeight(32)
+        self._vcode_refresh_btn.clicked.connect(
+            lambda: self.refresh_captcha_requested.emit(
+                self._platform.platform_id))
+        img_row.addWidget(self._vcode_refresh_btn)
+        img_row.addStretch(1)
+        vcode_lay.addLayout(img_row)
+        vcode_lay.addWidget(QLabel("验证码（图中字符，区分大小写）"))
+        self._vcode_edit = QLineEdit()
+        self._vcode_edit.setPlaceholderText("输入图中字符")
+        self._vcode_edit.setFixedHeight(32)
+        vcode_lay.addWidget(self._vcode_edit)
+        self._vcode_widget.setVisible(False)
+        form.addWidget(self._vcode_widget)
+
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         self._logout_btn = QPushButton("退出登录")
@@ -487,12 +568,39 @@ class _PlatformCard(QFrame):
         return form
 
     def _emit_login(self) -> None:
+        vcode = ""
+        if getattr(self, "_vcode_widget", None) and self._vcode_widget.isVisible():
+            vcode = self._vcode_edit.text().strip()
         self.login_requested.emit(
             self._platform.platform_id,
             self._user_edit.text().strip(),
             self._pass_edit.text(),
             self._remember.isChecked(),
+            vcode,
         )
+
+    def show_captcha(self, vcode_id: str, data_uri: str) -> None:
+        """展示验证码图片并切入验证码输入模式。"""
+        self._vcode_id = vcode_id or ""
+        try:
+            _, b64 = data_uri.split(",", 1)
+            pix = QPixmap()
+            pix.loadFromData(QByteArray.fromBase64(b64.encode("ascii")))
+            self._vcode_img_label.setPixmap(
+                pix.scaledToHeight(42, Qt.TransformationMode.SmoothTransformation))
+        except Exception as exc:
+            logger.warning("验证码图片解码失败: %s", exc)
+            self._vcode_img_label.setText("图片加载失败")
+        self._vcode_edit.clear()
+        self._vcode_widget.setVisible(True)
+        self._vcode_edit.setFocus()
+
+    def _reset_captcha(self) -> None:
+        self._vcode_id = ""
+        if getattr(self, "_vcode_widget", None) is not None:
+            self._vcode_widget.setVisible(False)
+        if getattr(self, "_vcode_edit", None) is not None:
+            self._vcode_edit.clear()
 
     def _apply_login_controls(self) -> None:
         """按登录态切换登录/退出控件。
@@ -509,6 +617,9 @@ class _PlatformCard(QFrame):
                 widget.setVisible(not logged_in)
         if getattr(self, "_logout_btn", None) is not None:
             self._logout_btn.setVisible(logged_in)
+        if logged_in and getattr(self, "_vcode_widget", None) is not None:
+            # 登录成功后同步隐藏验证码区，避免残留
+            self._vcode_widget.setVisible(False)
         if getattr(self, "_mijia_btn", None) is not None:
             # 米家单个按钮兼顾登录与切换账号：按状态改文案
             self._mijia_btn.setText("切换账号" if logged_in else "扫码登录")
@@ -564,6 +675,8 @@ class _PlatformCard(QFrame):
 
     def set_logged_in(self, logged_in: bool) -> None:
         self._logged_in = logged_in
+        if logged_in:
+            self._reset_captcha()
         self._refresh_counts()
         self._apply_login_controls()
 
@@ -605,6 +718,14 @@ class _PlatformCard(QFrame):
             self._login_btn.setStyleSheet(primary_button_qss("4px 18px"))
             self._login_btn.setIcon(qta.icon("mdi.login", color=PRIMARY_TEXT))
             self._login_btn.setIconSize(QSize(16, 16))
+        if getattr(self, "_vcode_edit", None) is not None:
+            self._vcode_edit.setStyleSheet(line_edit_qss)
+        if getattr(self, "_vcode_refresh_btn", None) is not None:
+            self._vcode_refresh_btn.setStyleSheet(secondary_button_qss("4px 18px"))
+        if getattr(self, "_vcode_img_label", None) is not None:
+            self._vcode_img_label.setStyleSheet(
+                f"border: 1px solid {SiColors.LINE}; border-radius: 6px;"
+                f" background: {SiColors.SURFACE};")
         if getattr(self, "_logout_btn", None) is not None:
             self._logout_btn.setStyleSheet(secondary_button_qss("4px 18px"))
         if getattr(self, "_mijia_btn", None) is not None:

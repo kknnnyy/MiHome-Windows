@@ -22,6 +22,15 @@ class PlatformError(Exception):
     """携带用户可直接阅读的中文信息，界面层直接展示 message 即可。"""
 
 
+class CaptchaRequired(PlatformError):
+    """登录需要图形验证码（如开机卡多次失败触发 -2109）。
+
+    界面层捕获后调用平台 ``get_captcha()`` 取图，用户在表单内输入
+    验证码再带 ``vcode``/``vcode_id`` 重新登录。该异常本身只表达
+    "需要验证码" 这一信号，不带图片数据（图片需独立拉取）。
+    """
+
+
 class PlatformBase:
     """设备平台接口。子类按需覆写；不支持的能力给出安全默认值。"""
 
@@ -57,6 +66,15 @@ class PlatformBase:
 
     def login(self, **credentials) -> None:
         """登录；credentials 由各平台自定（如用户名密码）。"""
+        raise NotImplementedError
+
+    def get_captcha(self) -> dict:
+        """取登录图形验证码；返回 ``{vcode_id, vcode_img}``。
+
+        ``vcode_img`` 为可直接用于 ``<img>`` 或 Qt 图片控件的 data URI。
+        默认不支持（无验证码的平台无需实现；界面也只有 login 抛
+        CaptchaRequired 时才会调用它）。
+        """
         raise NotImplementedError
 
     def logout(self) -> None:

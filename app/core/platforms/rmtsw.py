@@ -19,7 +19,11 @@ import requests
 
 from app.core import platform_store
 from app.core.models import ActionInfo, DeviceInfo
-from app.core.platforms.base import PlatformBase, PlatformError
+from app.core.platforms.base import (
+    CaptchaRequired,
+    PlatformBase,
+    PlatformError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,9 @@ _CMD_LOGOUT = 5
 _CMD_GET_USER_INFO = 6
 _CMD_GET_DEVICELIST = 9
 _CMD_SEND_TASK = 51
+_CMD_GET_VCODE = 101           # 取图形验证码（GET_VCODE_IMG）
+_GET_VCODE_TYPE = 2            # GET_VCODE_IMG 的验证码类型
+_ERR_NEED_VCODE = -2109        # 登录返回此码即需图形验证码
 
 # 任务指令（Task 类）；TaskType 固定 1（控制）
 _TASK_TYPE_CONTROL = 1
@@ -78,6 +85,7 @@ _ERROR_HINTS = {
     -1011: "客户端未初始化",
     -1014: "用户未登录",
     -2109: "登录需要图形验证码",
+    -2102: "验证码错误",
     -4003: "任务不存在",
     -5102: "设备离线",
 }
@@ -96,8 +104,12 @@ class RmtswClient:
 
     # ---------- 底层请求 ----------
 
-    def _request(self, cmd: int, data: dict) -> dict:
-        """发送一次命令并返回 Data；失败抛 PlatformError。"""
+    def _request_raw(self, cmd: int, data: dict) -> dict:
+        """发送一次命令并返回完整 payload（含 ErrCode/ErrMsg/Data）。
+
+        不抛异常、不解析错误码，交由调用方按业务处理：login 需区分
+        -2109 触发验证码，get_captcha 需取 Data.VCodeImg。
+        """
         body = json.dumps({"CMD": cmd, "Data": data}, ensure_ascii=False)
         try:
             resp = self._session.post(API_URL, data=body.encode("utf-8"),
@@ -111,6 +123,11 @@ class RmtswClient:
                 f"开机卡云端返回了无法解析的内容（HTTP {resp.status_code}）")
         if not isinstance(payload, dict):
             raise PlatformError("开机卡云端返回格式异常")
+        return payload
+
+    def _request(self, cmd: int, data: dict) -> dict:
+        """发送一次命令并返回 Data；错误（ErrCode!=0）抛 PlatformError。"""
+        payload = self._request_raw(cmd, data)
         code = payload.get("ErrCode")
         if code:
             hint = _ERROR_HINTS.get(code)
@@ -147,15 +164,57 @@ class RmtswClient:
 
     # ---------- 业务命令 ----------
 
-    def login(self, username: str, password: str) -> dict:
-        """账号密码登录，成功返回用户信息（UserId/UserName/…）。"""
+    def login(self, username: str, password: str,
+              vcode_id: str = "", vcode: str = "") -> dict:
+        """账号密码登录，成功返回用户信息（UserId/UserName/…）。
+
+        vcode_id/vcode 为图形验证码（多次失败触发 -2109 后由 get_captcha
+        取得）。登录返回 -2109 时抛 CaptchaRequired，界面层取图后重试。
+        """
         self.client_init()
-        return self._request(_CMD_LOGIN, {
+        payload = self._request_raw(_CMD_LOGIN, {
             "UserName": username,
             "UserPass": password,
-            "VCodeId": "",
-            "VCode": "",
+            "VCodeId": vcode_id,
+            "VCode": vcode,
         })
+        code = payload.get("ErrCode")
+        if code == _ERR_NEED_VCODE:
+            raise CaptchaRequired("登录需要图形验证码，请填写图中字符")
+        if code:
+            hint = _ERROR_HINTS.get(code)
+            message = payload.get("ErrMsg") or hint or "未知错误"
+            if hint and hint not in message:
+                message = f"{message}（{hint}）"
+            raise PlatformError(f"开机卡云端错误（错误码 {code}）：{message}")
+        data_field = payload.get("Data")
+        return data_field if isinstance(data_field, dict) else {}
+
+    def get_captcha(self) -> dict:
+        """取登录图形验证码，返回 {vcode_id, vcode_img(data URI)}。
+
+        vcode_img 已拼好 ``data:image/jpeg;base64,`` 前缀，可直接喂给 Qt
+        图片控件（base64 解码后）或 ``<img>``。
+        """
+        self.client_init()
+        payload = self._request_raw(_CMD_GET_VCODE,
+                                    {"VCodeType": _GET_VCODE_TYPE})
+        code = payload.get("ErrCode")
+        if code:
+            hint = _ERROR_HINTS.get(code)
+            message = payload.get("ErrMsg") or hint or "未知错误"
+            if hint and hint not in message:
+                message = f"{message}（{hint}）"
+            raise PlatformError(f"获取验证码失败（错误码 {code}）：{message}")
+        data = payload.get("Data")
+        if not isinstance(data, dict):
+            raise PlatformError("获取验证码失败：服务端未返回数据")
+        vcode_id = data.get("VCodeId") or ""
+        img = data.get("VCodeImg") or ""
+        if not vcode_id or not img:
+            raise PlatformError("获取验证码失败：服务端未返回验证码图片")
+        return {"vcode_id": vcode_id,
+                "vcode_img": f"data:image/jpeg;base64,{img}"}
 
     def get_user_info(self) -> dict:
         self.ensure_initialized()
@@ -270,11 +329,13 @@ class RmtswPlatform(PlatformBase):
         return self._user_name is not None
 
     def login(self, username: str, password: str,
-              remember: bool = False) -> None:
+              remember: bool = False, vcode_id: str = "",
+              vcode: str = "") -> None:
         username = (username or "").strip()
         if not username or not password:
             raise PlatformError("请输入开机卡账号和密码")
-        info = self._client.login(username, password)
+        info = self._client.login(username, password,
+                                   vcode_id=vcode_id, vcode=vcode)
         if not info.get("UserId"):
             raise PlatformError("登录失败：云端未返回用户信息")
         self._user_name = str(info.get("UserName") or username)
