@@ -142,10 +142,21 @@ class PlatformManagerDialog(OverlayDialog):
     # ---------- 状态探测 ----------
 
     def _probe_status(self) -> None:
-        """后台探测各平台真实登录态（美的/开机卡会话可能已过期）。"""
+        """后台读取各平台的本地登录态，用于面板展示。
+
+        注意：这里必须用 ``session_active()`` 而非 ``is_logged_in()``。
+        ``is_logged_in()`` 会发起 ``list_home`` 联网校验，美的云端在
+        token 失效时会**自动自愈重登**（= 用户手机上弹登录提醒），于是
+        仅仅是打开这个管理面板就会触发美的重新登录、手机连环弹通知——
+        这正是“点开多平台选项卡就收到登录通知、且每次都重复请求”的根因。
+        ``session_active()`` 只看内存里是否已登录（美的为 ``_cloud is
+        not None``，开机卡为 ``_user_name is not None``），零网络、零打扰，
+        一次登录在内存里可多次复用。真正的重登只发生在用户显式登录或
+        实际操作设备而会话已丢失时（由 _require_cloud / auto_login 负责）。
+        """
         self._set_busy(True)
         self._jobs.submit(
-            lambda: {p.platform_id: (p.is_logged_in(), p.status_text())
+            lambda: {p.platform_id: (p.session_active(), p.status_text())
                      for p in self._registry.platforms},
             on_success=self._on_status_probed,
             on_error=lambda exc: (
