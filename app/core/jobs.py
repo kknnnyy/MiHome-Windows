@@ -126,7 +126,7 @@ class JobExecutor(QObject):
             except Exception as exc:  # 后台线程的异常必须全部拦下转成回调
                 # 单行警告即可：设备离线、spec 缺失这类失败是常态，
                 # 全栈日志只会淹没真正需要关注的问题
-                logger.warning("后台任务失败: %s", exc)
+                logger.warning("后台任务失败: %r", exc)
                 self._results.put((task.on_error, exc))
             else:
                 self._results.put((task.on_success, result))

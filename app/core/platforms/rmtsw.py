@@ -116,6 +116,12 @@ class RmtswClient:
                                       timeout=25)
         except requests.RequestException as exc:
             raise PlatformError(f"开机卡云端连接失败：{exc}") from exc
+        except Exception as exc:
+            # 打包环境出现过 str 为空的非 RequestException 异常穿透到界面，
+            # 这里兜底包装并带上类型名，保证提示可读、可定位
+            raise PlatformError(
+                f"开机卡云端连接失败：{type(exc).__name__}: "
+                f"{str(exc) or '无错误详情'}") from exc
         try:
             payload = resp.json()
         except ValueError:
@@ -202,8 +208,12 @@ class RmtswClient:
         调用即便返回非 0 也忽略（会话已由首次 init 建立，无需重连）。
         """
         try:
-            self.client_init()
-        except PlatformError:
+            self.ensure_initialized()
+        except Exception:
+            # 登录流程里 client_init 已成功执行（_initialized=True）并建立
+            # 会话 Cookie，这里通常直接跳过、不再发请求；即便需要补 init，
+            # 任何失败也不该阻断取图——打包环境曾因二次 init 抛出 str 为
+            # 空的异常导致整个取图失败。
             pass
         payload = self._request_raw(_CMD_GET_VCODE,
                                     {"VCodeType": _GET_VCODE_TYPE})

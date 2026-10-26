@@ -253,7 +253,9 @@ class PlatformManagerDialog(OverlayDialog):
         if not _alive(self) or not _alive(card):
             return
         self._set_busy(False)
-        card.set_status(f"获取验证码失败：{error}", error=True)
+        card.set_status(
+            f"获取验证码失败：{str(error) or type(error).__name__}",
+            error=True)
 
     def _on_password_logout(self, platform_id: str) -> None:
         card = self._cards.get(platform_id)
