@@ -8,7 +8,8 @@
    电源/模式/风速/预设/摆风/温度/辅热与开关实体，状态行含室内温度；
 4. 异步桥基本可用；
 5. 美的平台通过插件机制注册进注册表；
-6. 面板对话框的关闭竞态（开着面板时关掉，异步结果回来不得崩）。
+6. 面板对话框的关闭竞态（开着面板时关掉，异步结果回来不得崩）；
+7. 一键更新落到用户目录的协议层覆盖内置副本（且不可用时回退）。
 
 用法: python -m tests.plugin_test
 """
@@ -559,6 +560,80 @@ def test_inactive_platform_devices_filtered() -> None:
     print("18. 未登录平台设备过滤 OK")
 
 
+def test_user_vendor_overrides_bundled() -> None:
+    """一键更新落到用户目录的协议层必须真正生效。
+
+    锁死：更新只替换 ``USER_DIR/<id>/vendor``，而导入一直走
+    ``app.plugins.<id>.adapter``，它的 ``from .vendor...`` 恒解析到内置
+    副本——更新下载完了却永远用不上。
+    """
+    import json
+    import shutil
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        user_root = root / "plugins"
+        plugin_dir = user_root / "midea"
+        plugin_dir.mkdir(parents=True)
+        # 模拟更新落位：整份协议层复制过去，并在 vendor 里打个标记
+        shutil.copytree(loader.BUNDLED_DIR / "midea" / "vendor",
+                        plugin_dir / "vendor")
+        init_file = plugin_dir / "vendor" / "__init__.py"
+        init_file.write_text(
+            init_file.read_text(encoding="utf-8") + "\nMARKER = 'user'\n",
+            encoding="utf-8")
+        (plugin_dir / "plugin.json").write_text(json.dumps({
+            "id": "midea", "name": "美的", "version": "1.0.0",
+            "entry": "adapter:MideaPlatform",
+            "upstream": {"repo": "sususweet/midea-meiju-codec",
+                         "version": "v9.9.9"},
+        }), encoding="utf-8")
+        # 没有 vendor 的插件不应挂载
+        bare = user_root / "bare"
+        bare.mkdir()
+        (bare / "plugin.json").write_text(json.dumps(
+            {"id": "bare", "name": "x", "version": "1", "entry": "a:B"}),
+            encoding="utf-8")
+
+        old_dir = loader.USER_DIR
+        loader.USER_DIR = user_root
+        try:
+            plugins = {info.id: info for info in loader.discover()}
+            info = plugins["midea"]
+            assert info.source == "user", info.source
+            assert info.path == plugin_dir
+            assert info.upstream_version == "v9.9.9"
+            # 缺 entry 模块的用户副本：加载失败 -> None（调用方回退内置）
+            assert loader._import_user_plugin(plugins["bare"], "a") is None
+
+            top = f"{loader.USER_PKG_PREFIX}midea"
+            loader._drop_modules(top)
+            module = loader._import_user_plugin(info, "adapter")
+            assert module is not None
+            # 协议层与设备映射表取用户目录那份
+            assert list(sys.modules[top].__path__)[0] == str(plugin_dir)
+            vendor_mod = importlib.import_module(f"{top}.vendor")
+            assert getattr(vendor_mod, "MARKER") == "user"
+            cloud = importlib.import_module(f"{top}.vendor.core.cloud")
+            assert Path(cloud.__file__).is_relative_to(plugin_dir), \
+                cloud.__file__
+            mapping = importlib.import_module(
+                f"{top}.vendor.device_mapping.T0xAC")
+            assert Path(mapping.__file__).is_relative_to(plugin_dir)
+            # 适配器由内置目录同步进用户副本（打包版内置目录不可直接导入）
+            assert Path(module.__file__).is_relative_to(plugin_dir)
+        finally:
+            loader._drop_modules(f"{loader.USER_PKG_PREFIX}midea")
+            loader.USER_DIR = old_dir
+    # 回滚后不留残余
+    assert not [n for n in sys.modules
+                if n.startswith(loader.USER_PKG_PREFIX)]
+    print("19. 用户目录协议层覆盖内置 OK")
+
+
 test_ha_shim()
 test_plugin_discovery()
 test_manifest_validation()
@@ -577,5 +652,6 @@ test_midea_power_state_known()
 test_platform_card_login_controls()
 test_mijia_card_button_text()
 test_inactive_platform_devices_filtered()
+test_user_vendor_overrides_bundled()
 
 print("\nPLUGIN REGRESSION ALL PASS")

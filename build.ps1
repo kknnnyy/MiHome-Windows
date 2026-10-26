@@ -369,6 +369,19 @@ if (Test-Path "dist\run.dist") {
     Remove-Item "dist\run.build" -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# 插件源码必须有一份在磁盘上（--include-data-dir 只复制了非代码文件）：
+# 打包版里 app.plugins.* 是编译进 exe 的冻结模块，Nuitka 不允许从冻结包
+# 所在目录 import 源码（find_spec 返回 None）；而"一键更新"要把内置适配器
+# 源码同步进用户目录，再以顶层包名 _mihome_plugin_<id> 从磁盘加载更新后的
+# 协议层（否则更新下载完了仍用内置副本）。详见 app/plugins/loader.py。
+$PluginDst = "dist\app\plugins"
+robocopy "app\plugins" $PluginDst /E /XD __pycache__ /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
+if (-not (Test-Path "$PluginDst\midea\adapter.py")) {
+    Write-Host "[ERROR] 插件源码未复制进产物，插件更新会失效" -ForegroundColor Red
+    exit 1
+}
+Write-Host "插件源码已随产物分发" -ForegroundColor Gray
+
 $Exe = "dist\MiHome-Windows.exe"
 if (Test-Path $Exe) {
     # ---- 隐私自检：产物里绝不能出现用户数据 ----

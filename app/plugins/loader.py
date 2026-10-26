@@ -11,6 +11,8 @@
 """
 
 import importlib
+import importlib.machinery
+import importlib.util
 import json
 import logging
 import shutil
@@ -133,11 +135,91 @@ def discover() -> list[PluginInfo]:
     return sorted(plugins.values(), key=lambda p: p.id)
 
 
+# 用户副本导入时用的顶层包名前缀。必须避开 ``app.plugins.*``：打包版
+# （Nuitka）里那些模块是编译进 exe 的冻结模块，适配器里的
+# ``from .vendor...`` 会按全名命中冻结表，用户目录的新协议层永远抢不到。
+# 用一个冻结表里没有的顶层名，协议层就从用户目录加载。
+USER_PKG_PREFIX = "_mihome_plugin_"
+
+
+def _drop_modules(prefix: str) -> None:
+    """清掉顶层包 prefix 及其子模块的导入缓存（回滚用）。"""
+    dotted = f"{prefix}."
+    for name in [n for n in sys.modules
+                 if n == prefix or n.startswith(dotted)]:
+        del sys.modules[name]
+
+
+def _bundled_plugin_dir(plugin_id: str) -> Path | None:
+    """内置插件目录（给副本提供适配器代码：一键更新只替换协议层）。"""
+    for root in _bundled_roots():
+        candidate = root / plugin_id
+        if (candidate / "plugin.json").is_file():
+            return candidate
+    return None
+
+
+def _sync_builtin_code(info: PluginInfo, bundled: Path | None) -> None:
+    """把内置插件的适配器源码同步进用户目录（一键更新只替换协议层）。
+
+    打包版里内置插件目录是冻结包的路径，Nuitka 不允许从那里 import 源码
+    （实测 find_spec 返回 None），所以把顶层 .py 复制成用户目录里的普通
+    文件，用户副本才是自洽的：协议层取更新后的，适配器取内置这份。
+    """
+    if bundled is None:
+        return
+    for src in sorted(bundled.glob("*.py")):
+        try:
+            shutil.copy2(src, info.path / src.name)
+        except OSError as exc:
+            logger.info("插件 %s 同步适配器源码失败 %s: %s",
+                        info.id, src.name, exc)
+
+
+def _import_user_plugin(info: PluginInfo, module_name: str):
+    """导入用户目录里的插件副本，让"一键更新"真正生效。
+
+    用户副本只含 ``vendor/`` 与 ``plugin.json``（更新的只是上游协议层）。
+    这里合成一个顶层包 ``<前缀><id>`` 指向用户目录：
+
+    - 包名不在打包版（Nuitka）的冻结表里，全部从磁盘加载，绕开模块表；
+    - 协议层与设备映射表 T0xXX 取用户目录那份 → 更新生效；
+    - 适配器（``adapter.py`` 等）由 _sync_builtin_code 同步自内置目录。
+
+    返回 entry 模块；不可用（已导入过 / 加载失败）返回 None，由调用方
+    回退到内置副本——宁可用旧协议层，也不能让平台整个消失。
+    """
+    top = f"{USER_PKG_PREFIX}{info.id}"
+    if top in sys.modules:
+        return None
+    _sync_builtin_code(info, _bundled_plugin_dir(info.id))
+    spec = importlib.machinery.ModuleSpec(top, None)
+    spec.submodule_search_locations = [str(info.path)]
+    sys.modules[top] = importlib.util.module_from_spec(spec)
+    try:
+        module = importlib.import_module(f"{top}.{module_name}")
+    except Exception as exc:
+        _drop_modules(top)
+        logger.warning("插件 %s 的用户副本加载失败: %s", info.id, exc)
+        return None
+    logger.info("插件 %s 使用用户目录协议层: %s", info.id, info.path)
+    return module
+
+
 def _import_platform(info: PluginInfo) -> PlatformBase:
-    """按 entry（模块:类名）导入并实例化平台。"""
+    """按 entry（模块:类名）导入并实例化平台。
+
+    用户目录插件（一键更新后的副本）优先，失败回退内置副本。
+    """
     module_name, class_name = info.entry.split(":", 1)
-    package = f"{__package__}.{info.id}"
-    module = importlib.import_module(f"{package}.{module_name}")
+    module = None
+    if info.source == "user":
+        module = _import_user_plugin(info, module_name)
+        if module is None:
+            logger.info("插件 %s 回退内置副本", info.id)
+    if module is None:
+        module = importlib.import_module(
+            f"{__package__}.{info.id}.{module_name}")
     platform_cls = getattr(module, class_name, None)
     if platform_cls is None:
         raise AttributeError(f"插件 {info.id} 的 {info.entry} 不存在")
